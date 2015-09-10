@@ -1,0 +1,7 @@
+{
+ "from": "www",
+ "to": "assets/apps/%HBUILDERID%/www",
+ "cmd": "c:\\Users\\egood\\AppData\\Roaming\\npm\\uglifyjs.cmd",
+ "paramsFmt": "%FileName% -o %FileBaseName%.min.js",
+ "launch_path": ""
+}
