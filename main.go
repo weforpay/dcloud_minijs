@@ -10,17 +10,20 @@ import (
 	"io/ioutil"
 	"os"
 	"os/exec"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 )
 
 type Config struct {
-	From        string `json:"from"`
-	To          string `json:"to"`
-	Cmd         string `json:"cmd"`
-	ParamsFmt   string `json:"paramsFmt"`
-	LanunchPath string `json:"launch_path"`
+	From               string
+	To                 string
+	Cmd                string
+	ParamsFmt          string
+	LanunchPath        string
+	ControlXmlPath     string
+	AndroidManifestXml string
 }
 
 const configName = "h5release.json"
@@ -31,8 +34,8 @@ var config Config
 func main() {
 
 	log.SetLogger("console", "")
-	log.SetLevel(logs.LevelDebug)
-
+	log.SetLevel(logs.LevelInfo)
+	log.EnableFuncCallDepth(true)
 	log.Debug("args:%#v", flag.Args())
 
 	log.Info("main run")
@@ -43,7 +46,9 @@ func main() {
 		config.To = `assets/apps/%HBUILDERID%/www`
 		config.Cmd = `c:\Users\egood\AppData\Roaming\npm\uglifyjs.cmd`
 		config.ParamsFmt = `%FileName% -o %FileBaseName%.min.js`
-		bs, err = json.MarshalIndent(&config, "", " ")
+		config.ControlXmlPath = `assets\data\control.xml`
+		config.AndroidManifestXml = `AndroidManifest.xml`
+		bs, _ = json.MarshalIndent(&config, "", " ")
 		ioutil.WriteFile(configName, bs, 0666)
 		return
 	}
@@ -52,6 +57,7 @@ func main() {
 		log.Error(err.Error())
 		return
 	}
+
 	nProc := runtime.NumCPU() * 2
 	wg := sync.WaitGroup{}
 	chnProc := make(chan *exec.Cmd, nProc)
@@ -64,11 +70,13 @@ func main() {
 			}
 		}()
 	}
-	err = PrepareProc()
+	manifestMap, err := PrepareProc()
 	if err != nil {
 		log.Error("PrepareProc err:%#v", err)
 		return
 	}
+	err = ProcVersion(manifestMap)
+
 	err = ProcLaunchPageScript(config.LanunchPath)
 	if err != nil {
 		log.Error("ProcLaunchPageScript err:%#v", err)
@@ -81,6 +89,18 @@ func main() {
 		name := fi.Name()
 		os.MkdirAll(to, 0666)
 		switch {
+		case fi.Name() == "manifest.json":
+			dstName := to + string(os.PathSeparator) + fi.Name()
+			bs, err := json.Marshal(manifestMap)
+			if err != nil {
+				log.Error(err.Error())
+				break
+			}
+			err = ioutil.WriteFile(dstName, bs, 0666)
+			if err != nil {
+				log.Error(err.Error())
+				break
+			}
 		case strings.HasSuffix(name, "min.js"):
 		case strings.HasSuffix(name, ".js"):
 			FileName := from + string(os.PathSeparator) + fi.Name()
@@ -121,6 +141,7 @@ func CopyFile(dst, src string) (err error) {
 	err = ioutil.WriteFile(dst, bs, 0666)
 	return
 }
+
 func RunPath(from, to string, each func(string, string, os.FileInfo) error) (err error) {
 	l, err := ioutil.ReadDir(from)
 	if err != nil {
@@ -147,36 +168,25 @@ func RunPath(from, to string, each func(string, string, os.FileInfo) error) (err
 	return
 }
 
-func PrepareProc() (err error) {
+func PrepareProc() (m map[string]interface{}, err error) {
 	f, err := os.Open(config.From + string(os.PathSeparator) + "manifest.json")
 	if err != nil {
 		log.Info("no hbuilder 'manifest.json' file")
-		return nil
+		return
 	}
 	defer f.Close()
-	type HBuilderConfig struct {
-		Platform []string `json:"@platforms"`
-		Id       string   `json:"id"`
-		Name     string   `json:"name"`
-		Version  struct {
-			Name string `json:"name"`
-			Code string `json:"code"`
-		}
-		LanunchPath string `json:"launch_path"`
-	}
-	hcfg := HBuilderConfig{}
 
 	jr := NewJsonCommentReader(f)
-	err = json.NewDecoder(jr).Decode(&hcfg)
+	err = json.NewDecoder(jr).Decode(&m)
 	if err != nil {
 		fmt.Println()
 		log.Error("parse 'manifest.json' file err:%#v", err)
 		log.Error("%#v", jr)
 		return
 	}
-	log.Debug("json:%#v", hcfg)
-	config.To = strings.Replace(config.To, "%HBUILDERID%", hcfg.Id, -1)
-	config.LanunchPath = config.From + string(os.PathSeparator) + hcfg.LanunchPath
+	log.Debug("json:%#v", m)
+	config.To = strings.Replace(config.To, "%HBUILDERID%", m["id"].(string), -1)
+	config.LanunchPath = config.From + string(os.PathSeparator) + m["launch_path"].(string)
 	return
 }
 
@@ -286,11 +296,6 @@ func ProcLaunchPageScript(fileName string) (err error) {
 		log.Error("%#v", err)
 	}
 
-	doc.Find(".reviews-wrap article .review-rhs").Each(func(i int, s *goquery.Selection) {
-		band := s.Find("h3").Text()
-		title := s.Find("i").Text()
-		fmt.Printf("Review %d: %s - %s\n", i, band, title)
-	})
 	doc.Find("script[src]").Each(func(i int, s *goquery.Selection) {
 		src, ok := s.Attr("src")
 		if ok {
@@ -301,5 +306,57 @@ func ProcLaunchPageScript(fileName string) (err error) {
 			}
 		}
 	})
+	return
+}
+
+func ProcVersion(manifestMap map[string]interface{}) (err error) {
+	err = ProcControlXml(manifestMap)
+	if err != nil {
+		return
+	}
+	err = ProcAppManifestXml(manifestMap)
+	if err != nil {
+		return
+	}
+	return
+}
+func ProcControlXml(manifestMap map[string]interface{}) (err error) {
+	bs, err := ioutil.ReadFile(config.ControlXmlPath)
+	if err != nil {
+		log.Error("%v", err)
+		return
+	}
+	versionM := manifestMap["version"].(map[string]interface{})
+	log.Debug("version:%s code:%s", versionM["name"], versionM["code"])
+
+	r, err := regexp.Compile(fmt.Sprintf(`appid="%s"\s+appver="[\w\.]+"`, manifestMap["id"]))
+	if err != nil {
+		log.Error("%v", err)
+		return
+	}
+
+	s := r.ReplaceAllString(string(bs), fmt.Sprintf(`appid="%s" appver="%s"`, manifestMap["id"], versionM["name"]))
+	log.Debug("after replace:%s", s)
+	err = ioutil.WriteFile(config.ControlXmlPath, []byte(s), 0666)
+	return
+}
+func ProcAppManifestXml(manifestMap map[string]interface{}) (err error) {
+	bs, err := ioutil.ReadFile(config.AndroidManifestXml)
+	if err != nil {
+		log.Error("%v", err)
+		return
+	}
+	versionM := manifestMap["version"].(map[string]interface{})
+	log.Debug("version:%s code:%s", versionM["name"], versionM["code"])
+
+	r, err := regexp.Compile(`android:versionCode\s*=\s*"[\w+\.]+"\s*android:versionName\s*=\s*"[\w\.]+"`)
+	if err != nil {
+		log.Error("%v", err)
+		return
+	}
+
+	s := r.ReplaceAllString(string(bs), fmt.Sprintf(`android:versionCode="%s" android:versionName="%s"`, versionM["code"], versionM["name"]))
+	log.Debug("after replace:%s", s)
+	err = ioutil.WriteFile(config.AndroidManifestXml, []byte(s), 0666)
 	return
 }

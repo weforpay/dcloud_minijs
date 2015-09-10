@@ -1,7 +1,9 @@
 {
- "from": "www",
- "to": "assets/apps/%HBUILDERID%/www",
- "cmd": "c:\\Users\\egood\\AppData\\Roaming\\npm\\uglifyjs.cmd",
- "paramsFmt": "%FileName% -o %FileBaseName%.min.js",
- "launch_path": ""
+ "From": "www",
+ "To": "assets/apps/%HBUILDERID%/www",
+ "Cmd": "c:\\Users\\egood\\AppData\\Roaming\\npm\\uglifyjs.cmd",
+ "ParamsFmt": "%FileName% -o %FileBaseName%.min.js",
+ "LanunchPath": "",
+ "ControlXmlPath": "assets\\data\\control.xml",
+ "AndroidManifestXml": "AndroidManifest.xml"
 }
